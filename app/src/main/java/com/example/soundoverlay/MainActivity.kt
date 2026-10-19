@@ -8,7 +8,11 @@ import android.provider.Settings
 import android.widget.Button
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult
 import androidx.appcompat.app.AppCompatActivity
+import android.app.Activity
+import android.content.Context
+import android.media.projection.MediaProjectionManager
 
 class MainActivity : AppCompatActivity() {
 
@@ -16,11 +20,41 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnStop: Button
     private lateinit var tvStatus: TextView
 
+    private var projectionData: Intent? = null
+    private var projectionResultCode: Int = Activity.RESULT_CANCELED
+
     private val requestRecordPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (!granted) {
             tvStatus.text = "RECORD_AUDIO permission denied"
+        }
+    }
+
+    private val requestProjection = registerForActivityResult(StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            projectionResultCode = result.resultCode
+            projectionData = result.data
+            tvStatus.text = "Projection granted — starting services"
+
+            // Start services with projection data
+            val start = Intent(this, AudioForegroundService::class.java)
+            start.putExtra("projection_result_code", projectionResultCode)
+            start.putExtra("projection_result_data", projectionData)
+            startService(start)
+
+            val overlay = Intent(this, OverlayService::class.java)
+            startService(overlay)
+
+            tvStatus.text = "Status: running (using playback capture)"
+        } else {
+            tvStatus.text = "Projection denied — will use microphone fallback"
+            // Start services without projection (microphone fallback)
+            val start = Intent(this, AudioForegroundService::class.java)
+            startService(start)
+            val overlay = Intent(this, OverlayService::class.java)
+            startService(overlay)
+            tvStatus.text = "Status: running (mic fallback)"
         }
     }
 
@@ -45,11 +79,19 @@ class MainActivity : AppCompatActivity() {
             // Request RECORD_AUDIO permission
             requestRecordPermission.launch(Manifest.permission.RECORD_AUDIO)
 
-            val start = Intent(this, AudioForegroundService::class.java)
-            startService(start)
-            val overlay = Intent(this, OverlayService::class.java)
-            startService(overlay)
-            tvStatus.text = "Status: running"
+            // For Android 10+ we can request audio playback capture via MediaProjection
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                val captureIntent = mgr.createScreenCaptureIntent()
+                requestProjection.launch(captureIntent)
+            } else {
+                // Older devices: start services with mic only
+                val start = Intent(this, AudioForegroundService::class.java)
+                startService(start)
+                val overlay = Intent(this, OverlayService::class.java)
+                startService(overlay)
+                tvStatus.text = "Status: running (mic only)"
+            }
         }
 
         btnStop.setOnClickListener {
